@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
+    <title>Why Can't My Web Server Running in Docker be Reached?</title>
+    </head>
+  <body>
+    <header>
+        <h1>Why Can't My Web Server Running in Docker be Reached?</h1>
+        </header>
+    <p>
+      A user sent feedback that they couldn't connect to
+      <a href="https://docs.risingwave.com/docs/current/get-started/">
+        RisingWave's standalone mode</a>
+      when using docker.
+      The error was:
+      <pre>
+        > psql -h 127.0.0.1 -p 4566
+        psql: error: connection to server at "127.0.0.1", port 4566 failed: Connection refused
+            Is the server running on that host and accepting TCP/IP connections?
+        </pre>
+      </p>
+
+    <p>
+      For context, RisingWave is a
+      <a href="https://docs.risingwave.com/docs/current/intro/">
+        Streaming Database</a>,
+      and standalone mode is just a deployment mode of RisingWave,
+      where all services of RisingWave are embedded in a single process.
+      The RisingWave Cluster has a Frontend service which
+      deals with client requests,
+      and the service listens to <code>127.0.0.1:4566</code> by default.
+      </p>
+    <p>
+      That was a little strange since we would run the tests on the binary
+      daily in CI, and nothing was flagged since the last version update.
+      I then realized that in CI and locally,
+      we executed the process on the host machine,
+      instead of within a container,
+      so this difference was likely the cause.
+
+      We checked the docker logs, and the server was definitely running.
+      So what else could be the error? It must be the connection between
+      the host machine and the frontend node running in the docker container,
+      which means it was a network issue.
+      First I checked the Docker Configurations
+      to see if the ports were exposed.
+      The port mapping was fine, the container did had the port mapping: <code>-p 4566:4566</code>.
+      Next, I looked at the frontend node's listening socket.
+      It listened to <code>127.0.0.1:4566</code> by default.
+      It seemed like the explanation was that the socket
+      was somehow not reachable from the outside.
+      I had a hunch that listening at the adress <code>0.0.0.0</code>
+      could work instead,
+      because I recalled that means it would listen on ALL network interfaces.
+      With this change, we finally we got the client to connect.
+      </p>
+    <p>
+      So how does routing to docker exactly happen?
+      We know that the routing path from the host machine to docker should
+      be static.
+      That's because we just changed to server's address, we did not
+      tweak anything else.
+      So the first question is, how does Docker setup the routing tables
+      such that requests to 127.0.0.1 actually get routed to it?
+      </p>
+    <p>
+
+      <pre>
+CONTAINER ID   IMAGE     COMMAND                  CREATED              STATUS          PORTS                                       NAMES
+0032f33c5091   test      "python3 -m http.ser…"   About a minute ago   Up 59 seconds  0.0.0.0:8080->8080/tcp, :::8080->8080/tcp   loving_yonath
+      </pre>
+
+      We see 0.0.0.0:8080->8080/tcp. What does that mean? Does curling 127.0.0.1 somehow change the destination address?
+
+      <pre>
+> $ sudo iptables -L DOCKER -n -v
+Chain DOCKER (1 references)
+ pkts bytes target     prot opt in     out     source               destination
+    0     0 ACCEPT     6    --  !docker0 docker0  0.0.0.0/0            172.17.0.2           tcp dpt:8080
+    0     0 ACCEPT     6    --  !docker0 docker0  0.0.0.0/0            172.17.0.3           tcp dpt:8080
+      </pre>
+
+      Seems like there can be multiple paths for ip tables.
+      Basically all source requests get translated to these two destination addresses.
+      </p>
+
+    <p>
+    </p>
+
+    </body>
+  <footer>
+    <a href="index.html">Home</a>
+    </footer>
+  </html>
